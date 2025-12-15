@@ -2,6 +2,8 @@
 
 Recently, Snapchat introduced a **5GB limit on Memories**, so if you want a complete backup of all your memories, you need to download your data manually. This Python script helps you download all your Snapchat memories from a JSON export.  
 
+As seen on: https://www.tiktok.com/@giraintech/video/7583879890265558280
+
 ---
 
 ## How It Works
