@@ -16,3 +16,10 @@ This Python script helps you download all your Snapchat memories from a JSON exp
 
 ```bash
 python3 download_snapchat.py
+```
+
+## Requirements
+- Python 3.x
+- Internet connection (to download media files)
+- urllib (comes with Python standard library)
+- Access to the JSON export from Snapchat
