@@ -32,6 +32,6 @@ for i, item in enumerate(media_items, start=1):
     try:
         urllib.request.urlretrieve(url, filepath)
     except Exception as e:
-        print(f"Failed: {e}")
+        print(f"❌ Failed: {e}")
 
-print("All remaining Snapchat memories downloaded to GiraDrive/snapchat")
+print("All remaining Snapchat memories downloaded ✅")
