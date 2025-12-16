@@ -2,10 +2,10 @@ import json
 import os
 import urllib.request
 import subprocess
-from datetime import datetime
+from datetime import datetime, timedelta, date
 
-JSON_FILE = ""
-OUTPUT_DIR = ""
+JSON_FILE = "" #Filepath for your downloaded file 
+OUTPUT_DIR = "" #Filepath for your desired location for the files
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -16,13 +16,13 @@ media_items = data.get("Saved Media", [])
 existing_files = set(os.listdir(OUTPUT_DIR))
 
 
+# ------------------ Parsing ------------------
+
 def parse_datetime(date_str):
-    # "2025-12-14 01:28:53 UTC"
     return datetime.strptime(date_str, "%Y-%m-%d %H:%M:%S UTC")
 
 
 def parse_location(location_str):
-    # "Latitude, Longitude: 38.730972, -77.27732"
     try:
         coords = location_str.split(":")[1].strip()
         lat, lon = map(float, coords.split(","))
@@ -33,30 +33,116 @@ def parse_location(location_str):
         return None, None
 
 
+# ------------------ DST Rules ------------------
+
+def nth_weekday(year, month, weekday, n):
+    d = date(year, month, 1)
+    d += timedelta(days=(weekday - d.weekday()) % 7)
+    return d + timedelta(weeks=n - 1)
+
+
+def last_weekday(year, month, weekday):
+    d = date(year, month + 1, 1) - timedelta(days=1)
+    return d - timedelta(days=(d.weekday() - weekday) % 7)
+
+
+def us_dst(year):
+    start = nth_weekday(year, 3, 6, 2)    # 2nd Sunday March
+    end = nth_weekday(year, 11, 6, 1)     # 1st Sunday Nov
+    return start, end
+
+
+def eu_dst(year):
+    start = last_weekday(year, 3, 6)      # Last Sunday March
+    end = last_weekday(year, 10, 6)       # Last Sunday Oct
+    return start, end
+
+
+def au_dst(year):
+    start = nth_weekday(year, 10, 6, 1)    # 1st Sunday Oct
+    end = nth_weekday(year + 1, 4, 6, 1)   # 1st Sunday Apr
+    return start, end
+
+
+# ------------------ Time Conversion ------------------
+
+def longitude_offset(lon):
+    return int(round(lon / 15))
+
+
+def is_dst(dt, lon):
+    y = dt.year
+    d = dt.date()
+
+    if -170 <= lon <= -50:
+        start, end = us_dst(y)
+        return start <= d < end
+
+    if -25 <= lon <= 45:
+        start, end = eu_dst(y)
+        return start <= d < end
+
+    if 110 <= lon <= 180:
+        start, end = au_dst(y)
+        return d >= start or d < end
+
+    return False
+
+
+def convert_utc_global(dt_utc, lat, lon):
+    if lon is None:
+        return dt_utc
+
+    offset = longitude_offset(lon)
+    dt_local = dt_utc + timedelta(hours=offset)
+
+    if is_dst(dt_local, lon):
+        dt_local += timedelta(hours=1)
+
+    return dt_local
+
+
+# ------------------ Metadata ------------------
+
 def apply_metadata(filepath, dt, lat=None, lon=None):
-    exif_cmd = [
+    is_video = filepath.lower().endswith(".mp4")
+
+    cmd = [
         "exiftool",
         "-overwrite_original",
-        f"-DateTimeOriginal={dt.strftime('%Y:%m:%d %H:%M:%S')}",
+        "-api", "QuickTimeUTC",
         f"-CreateDate={dt.strftime('%Y:%m:%d %H:%M:%S')}",
         f"-ModifyDate={dt.strftime('%Y:%m:%d %H:%M:%S')}",
     ]
 
+    if not is_video:
+        cmd.append(f"-DateTimeOriginal={dt.strftime('%Y:%m:%d %H:%M:%S')}")
+
     if lat is not None and lon is not None:
-        exif_cmd.extend([
-            f"-GPSLatitude={abs(lat)}",
-            f"-GPSLatitudeRef={'N' if lat >= 0 else 'S'}",
-            f"-GPSLongitude={abs(lon)}",
-            f"-GPSLongitudeRef={'E' if lon >= 0 else 'W'}",
-        ])
+        iso = f"{lat:+.6f}{lon:+.6f}/"
 
-    exif_cmd.append(filepath)
-    subprocess.run(exif_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if is_video:
+            # Write GPS to ALL atoms Photos.app may read
+            cmd.extend([
+                f"-QuickTime:LocationISO6709={iso}",
+                f"-Keys:LocationISO6709={iso}",
+                f"-Keys:GPSCoordinates={lat},{lon}",
+            ])
+        else:
+            cmd.extend([
+                f"-GPSLatitude={abs(lat)}",
+                f"-GPSLatitudeRef={'N' if lat >= 0 else 'S'}",
+                f"-GPSLongitude={abs(lon)}",
+                f"-GPSLongitudeRef={'E' if lon >= 0 else 'W'}",
+            ])
 
-    # Set filesystem timestamps (macOS)
+    cmd.append(filepath)
+    subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
     ts = dt.timestamp()
     os.utime(filepath, (ts, ts))
 
+# ------------------ Main Loop ------------------
 
 for i, item in enumerate(media_items, start=1):
     media_type = item.get("Media Type", "").lower()
@@ -70,28 +156,16 @@ for i, item in enumerate(media_items, start=1):
     if not url:
         continue
 
-    date_str = item.get("Date")
-    location_str = item.get("Location", "")
+    lat, lon = parse_location(item.get("Location", ""))
+    dt_utc = parse_datetime(item.get("Date"))
 
-    try:
-        dt = parse_datetime(date_str)
-    except Exception:
-        print(f"⚠️ Invalid date for {filename}, skipping metadata")
-        dt = None
-
-    lat, lon = parse_location(location_str)
+    dt_local = convert_utc_global(dt_utc, lat, lon)
 
     filepath = os.path.join(OUTPUT_DIR, filename)
-    print(f"Downloading {filename} → Drive")
+    print(f"Downloading {filename}")
 
-    try:
-        urllib.request.urlretrieve(url, filepath)
+    urllib.request.urlretrieve(url, filepath)
+    apply_metadata(filepath, dt_local, lat, lon)
 
-        if dt:
-            apply_metadata(filepath, dt, lat, lon)
-
-    except Exception as e:
-        print(f"❌ Failed: {e}")
-
-print("All remaining Snapchat memories downloaded with metadata ✅")
+print("All Snapchat memories downloaded with global local-time metadata ✅")
 
