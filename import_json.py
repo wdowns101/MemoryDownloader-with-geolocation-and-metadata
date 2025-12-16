@@ -4,8 +4,8 @@ import urllib.request
 import subprocess
 from datetime import datetime
 
-JSON_FILE = "/Users/willdowns/Downloads/Miscelaneous/mydata~1765917007368/json/memories_history.json"
-OUTPUT_DIR = "/Volumes/Photos-Videos/SnapchatT1"
+JSON_FILE = ""
+OUTPUT_DIR = ""
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
