@@ -4,8 +4,8 @@ import urllib.request
 import subprocess
 from datetime import datetime, timedelta, date
 
-JSON_FILE = "" #Filepath for your downloaded file 
-OUTPUT_DIR = "" #Filepath for your desired location for the files
+JSON_FILE = "" Path to the Snapchat JSON file you downloaded
+OUTPUT_DIR = "" Where you want your videos/images to be saved
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -33,7 +33,7 @@ def parse_location(location_str):
         return None, None
 
 
-# ------------------ DST Rules ------------------
+# ------------------ DST + Time ------------------
 
 def nth_weekday(year, month, weekday, n):
     d = date(year, month, 1)
@@ -47,24 +47,16 @@ def last_weekday(year, month, weekday):
 
 
 def us_dst(year):
-    start = nth_weekday(year, 3, 6, 2)    # 2nd Sunday March
-    end = nth_weekday(year, 11, 6, 1)     # 1st Sunday Nov
-    return start, end
+    return nth_weekday(year, 3, 6, 2), nth_weekday(year, 11, 6, 1)
 
 
 def eu_dst(year):
-    start = last_weekday(year, 3, 6)      # Last Sunday March
-    end = last_weekday(year, 10, 6)       # Last Sunday Oct
-    return start, end
+    return last_weekday(year, 3, 6), last_weekday(year, 10, 6)
 
 
 def au_dst(year):
-    start = nth_weekday(year, 10, 6, 1)    # 1st Sunday Oct
-    end = nth_weekday(year + 1, 4, 6, 1)   # 1st Sunday Apr
-    return start, end
+    return nth_weekday(year, 10, 6, 1), nth_weekday(year + 1, 4, 6, 1)
 
-
-# ------------------ Time Conversion ------------------
 
 def longitude_offset(lon):
     return int(round(lon / 15))
@@ -102,10 +94,51 @@ def convert_utc_global(dt_utc, lat, lon):
     return dt_local
 
 
+# ------------------ File Handling ------------------
+
+FILETYPE_EXT_MAP = {
+    "jpeg": ".jpg",
+    "jpg": ".jpg",
+    "heic": ".heic",
+    "png": ".png",
+    "webp": ".webp",
+    "mp4": ".mp4",
+    "mov": ".mov"
+}
+
+
+def detect_file_type(filepath):
+    try:
+        return subprocess.check_output(
+            ["exiftool", "-FileType", "-s3", filepath],
+            stderr=subprocess.DEVNULL
+        ).decode().strip().lower()
+    except Exception:
+        return None
+
+
+def repair_mp4(filepath):
+    fixed = filepath.replace(".mp4", "_fixed.mp4")
+    subprocess.run(
+        [
+            "ffmpeg", "-y",
+            "-err_detect", "ignore_err",
+            "-i", filepath,
+            "-c", "copy",
+            "-movflags", "+faststart",
+            fixed
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL
+    )
+    os.replace(fixed, filepath)
+
+
 # ------------------ Metadata ------------------
 
 def apply_metadata(filepath, dt, lat=None, lon=None):
     is_video = filepath.lower().endswith(".mp4")
+    iso = f"{lat:+.6f}{lon:+.6f}/" if lat is not None else None
 
     cmd = [
         "exiftool",
@@ -119,10 +152,7 @@ def apply_metadata(filepath, dt, lat=None, lon=None):
         cmd.append(f"-DateTimeOriginal={dt.strftime('%Y:%m:%d %H:%M:%S')}")
 
     if lat is not None and lon is not None:
-        iso = f"{lat:+.6f}{lon:+.6f}/"
-
         if is_video:
-            # Write GPS to ALL atoms Photos.app may read
             cmd.extend([
                 f"-QuickTime:LocationISO6709={iso}",
                 f"-Keys:LocationISO6709={iso}",
@@ -142,15 +172,12 @@ def apply_metadata(filepath, dt, lat=None, lon=None):
     ts = dt.timestamp()
     os.utime(filepath, (ts, ts))
 
+
 # ------------------ Main Loop ------------------
 
 for i, item in enumerate(media_items, start=1):
-    media_type = item.get("Media Type", "").lower()
-    ext = ".mp4" if media_type == "video" else ".jpg"
-    filename = f"{i:05d}{ext}"
-
-    if filename in existing_files:
-        continue
+    base_name = f"{i:05d}"
+    temp_path = os.path.join(OUTPUT_DIR, base_name)
 
     url = item.get("Media Download Url")
     if not url:
@@ -158,14 +185,19 @@ for i, item in enumerate(media_items, start=1):
 
     lat, lon = parse_location(item.get("Location", ""))
     dt_utc = parse_datetime(item.get("Date"))
-
     dt_local = convert_utc_global(dt_utc, lat, lon)
 
-    filepath = os.path.join(OUTPUT_DIR, filename)
-    print(f"Downloading {filename}")
+    print(f"Downloading {base_name}")
+    urllib.request.urlretrieve(url, temp_path)
 
-    urllib.request.urlretrieve(url, filepath)
-    apply_metadata(filepath, dt_local, lat, lon)
+    filetype = detect_file_type(temp_path)
+    ext = FILETYPE_EXT_MAP.get(filetype, ".bin")
+    final_path = temp_path + ext
+    os.rename(temp_path, final_path)
 
-print("All Snapchat memories downloaded with global local-time metadata ✅")
+    if final_path.endswith(".mp4"):
+        repair_mp4(final_path)
 
+    apply_metadata(final_path, dt_local, lat, lon)
+
+print("✅ All Snapchat memories downloaded, repaired, and fully tagged")
